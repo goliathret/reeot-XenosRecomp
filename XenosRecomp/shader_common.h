@@ -12,6 +12,9 @@
 
 #ifdef REEOT_RECOMP
     #define SPEC_CONSTANT_SINT_TEXCOORD     (1 << 2)
+    // Xenos multiplies as Direct3D 9 did: 0 * anything = 0, infinity and NaN
+    // included, in mul, mad and the dot products (Xenia does the same).
+    #define SPEC_CONSTANT_ZERO_MUL          (1 << 3)
 #endif
 
 #if !defined(__cplusplus) || defined(__INTELLISENSE__)
@@ -392,11 +395,38 @@ void eotTwoProduct(float a, float b, out float p, out float e)
     e = err;
 }
 
-float dotF(float4 a, float4 b) { return dot(a, b); }
-float dotF(float3 a, float3 b) { return dot(a, b); }
+// Xenos's multiplication (SPEC_CONSTANT_ZERO_MUL): a product with a zero
+// factor is zero. Zeroing both factors of such products leaves the rest as is.
+#define ZERO_MUL_ON ((g_SpecConstants() & SPEC_CONSTANT_ZERO_MUL) != 0)
+void zeroPair(inout float a, inout float b)
+{
+    if (ZERO_MUL_ON && (a == 0.0 || b == 0.0)) { a = 0.0; b = 0.0; }
+}
+#define ZERO_PAIR_VECTOR(T, B) \
+void zeroPair(inout T a, inout T b) \
+{ \
+    if (ZERO_MUL_ON) { B z = or(a == 0.0, b == 0.0); a = select(z, 0.0, a); b = select(z, 0.0, b); } \
+}
+ZERO_PAIR_VECTOR(float2, bool2)
+ZERO_PAIR_VECTOR(float3, bool3)
+ZERO_PAIR_VECTOR(float4, bool4)
+#define ZERO_MUL_FUNCTIONS(T) \
+T mulZ(T a, T b) { zeroPair(a, b); return a * b; } \
+T madZ(T a, T b, T c) { zeroPair(a, b); return a * b + c; }
+ZERO_MUL_FUNCTIONS(float)
+ZERO_MUL_FUNCTIONS(float2)
+ZERO_MUL_FUNCTIONS(float3)
+ZERO_MUL_FUNCTIONS(float4)
+float dotZ(float4 a, float4 b) { zeroPair(a, b); return dot(a, b); }
+float dotZ(float3 a, float3 b) { zeroPair(a, b); return dot(a, b); }
+float dotZ(float2 a, float2 b) { zeroPair(a, b); return dot(a, b); }
+
+float dotF(float4 a, float4 b) { return dotZ(a, b); }
+float dotF(float3 a, float3 b) { return dotZ(a, b); }
 
 float dotP(float4 a, float4 b)
 {
+    zeroPair(a, b);
     float p, s, h, r, q;
     eotTwoProduct(a.x, b.x, p, s);
     eotTwoProduct(a.y, b.y, h, r);
@@ -414,6 +444,7 @@ float dotP(float4 a, float4 b)
 
 float dotP(float3 a, float3 b)
 {
+    zeroPair(a, b);
     float p, s, h, r, q;
     eotTwoProduct(a.x, b.x, p, s);
     eotTwoProduct(a.y, b.y, h, r);

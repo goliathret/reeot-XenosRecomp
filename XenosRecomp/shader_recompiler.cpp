@@ -502,6 +502,9 @@ static uint64_t vectorSourceTemps(const AluInstruction& instr)
 void ShaderRecompiler::recompile(const AluInstruction& instr)
 {
 #ifdef REEOT_RECOMP
+    specConstantsMask |= SPEC_CONSTANT_ZERO_MUL;
+#endif
+#ifdef REEOT_RECOMP
     VertexAluWrite vertexWrite{};
     vertexWrite.dotOffset = SIZE_MAX;
     vertexWrite.conditional = instr.isPredicated || !straightLineFlow || indentation > 1;
@@ -900,7 +903,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Mul:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, {})", op(VECTOR_0), op(VECTOR_1));
+#else
             print("{} * {}", op(VECTOR_0), op(VECTOR_1));
+#endif
             break;
 
         case AluVectorOpcode::Max:
@@ -941,7 +948,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Mad:
+#ifdef REEOT_RECOMP
+            print("madZ({}, {}, {})", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#else
             print("{} * {} + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#endif
             break;
 
         case AluVectorOpcode::CndEq:
@@ -974,11 +985,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                 break;
             }
         #endif
+        #ifdef REEOT_RECOMP
+            print("dotZ({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #else
             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #endif
             break;
 
         case AluVectorOpcode::Dp2Add:
+#ifdef REEOT_RECOMP
+            print("dotZ({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#else
             print("dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#endif
             break;
 
         case AluVectorOpcode::Cube:
@@ -1097,12 +1116,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluScalarOpcode::Muls:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, {})", op(SCALAR_0), op(SCALAR_1));
+#else
             print("{} * {}", op(SCALAR_0), op(SCALAR_1));
+#endif
             break;
 
         case AluScalarOpcode::MulsPrev:
         case AluScalarOpcode::MulsPrev2:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, ps)", op(SCALAR_0));
+#else
             print("{} * ps", op(SCALAR_0));
+#endif
             break;
 
         case AluScalarOpcode::Maxs:
@@ -1226,7 +1253,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         case AluScalarOpcode::Mulsc0:
         case AluScalarOpcode::Mulsc1:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, {})", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+#else
             print("{} * {}", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+#endif
             break;
 
         case AluScalarOpcode::Addsc0:
