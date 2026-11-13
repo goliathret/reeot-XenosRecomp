@@ -2229,11 +2229,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #ifdef REEOT_RECOMP
     straightLineFlow = simpleControlFlow;
 #endif
+    // Unstructurable control flow whose jumps all go forward (no loops)
+    // needs no loop or switch: each block runs if (pc <= block) and a jump
+    // just sets pc. GPU compilers handle the loop/switch state machine badly
+    // (register spills, no optimisation across blocks).
+    bool forwardOnly = false;
+    if (!simpleControlFlow)
+    {
+        forwardOnly = true;
+        for (uint32_t i = 0; i < cfSummaries.size(); ++i)
+        {
+            const CfSummary& summary = cfSummaries[i];
+            if (summary.kind == CfKind::LoopStart || summary.kind == CfKind::LoopEnd ||
+                ((summary.kind == CfKind::Cond || summary.kind == CfKind::Uncond) && summary.target <= i))
+                forwardOnly = false;
+        }
+    }
 
     if (simpleControlFlow)
     {
         out += '\n';
         indentation = 1;
+    }
+    else if (forwardOnly)
+    {
+        out += "\n\tuint pc = 0;\n";
+        out += "\t{\n";
     }
     else
     {
@@ -2257,7 +2278,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         for (auto& cfInstr : controlFlow)
         {
-            if (!simpleControlFlow)
+            if (forwardOnly)
+            {
+                indentation = 2;
+                out += "\t}\n";
+                println("\tif (pc <= {})", pc);
+                out += "\t{\n";
+            }
+            else if (!simpleControlFlow)
             {
                 indentation = 3;
                 println("\t\tcase {}:", pc);
@@ -2383,7 +2411,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     if (!simpleControlFlow)
                     {
                         println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
-                        out += "\t\t\tcontinue;\n";
+                        if (!forwardOnly)
+                            out += "\t\t\tcontinue;\n";
                     }
                 }
                 else
@@ -2421,7 +2450,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     {
                         out += "\t\t\t{\n";
                         println("\t\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
-                        out += "\t\t\t\tcontinue;\n";
+                        if (!forwardOnly)
+                            out += "\t\t\t\tcontinue;\n";
                         out += "\t\t\t}\n";
                     }
                 }
@@ -2575,6 +2605,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                         out += "return;\n";
                     }
                 }
+                else if (forwardOnly)
+                {
+                    out += "\t\tpc = 0xFFFFu;\n";
+                }
                 else
                 {
                     out += "\t\t\tbreak;\n";
@@ -2593,7 +2627,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         instrAddress += 12;
     }
 
-    if (!simpleControlFlow)
+    if (forwardOnly)
+    {
+        out += "\t}\n";
+    }
+    else if (!simpleControlFlow)
     {
         out += "\t\t\tbreak;\n";
         out += "\t\t}\n";
