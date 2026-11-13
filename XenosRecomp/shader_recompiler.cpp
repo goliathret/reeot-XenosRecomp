@@ -1864,7 +1864,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\n";
     }
 
-    bool printedRegisters[32]{};
+    // Xenos shaders address up to 64 temporary registers (real shaders use r32 and up).
+    bool printedRegisters[64]{};
 
     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
 
@@ -1923,7 +1924,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\n";
     }
 
-    for (size_t i = 0; i < 32; i++)
+    for (size_t i = 0; i < 64; i++)
     {
         if (!printedRegisters[i])
         {
@@ -2656,7 +2657,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         if (precisePs && psDeclOffset != 0)
             out.insert(psDeclOffset, "precise ");
-        for (int32_t reg = 31; reg >= 0; reg--)
+        for (int32_t reg = 63; reg >= 0; reg--)
         {
             if (((preciseRegisters >> reg) & 1) && registerDeclOffsets[reg] != 0)
                 out.insert(registerDeclOffsets[reg], "precise ");
