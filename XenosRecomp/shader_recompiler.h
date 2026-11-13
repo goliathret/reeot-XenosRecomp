@@ -72,7 +72,7 @@ struct ShaderRecompiler : StringBuffer
         bool positionReadsPs;
     };
     std::vector<VertexAluWrite> vertexAluWrites;
-    size_t registerDeclOffsets[32]{};
+    size_t registerDeclOffsets[64]{};
     size_t psDeclOffset = 0;
     bool straightLineFlow = true;
 #endif

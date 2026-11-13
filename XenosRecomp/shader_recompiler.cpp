@@ -1,3 +1,4 @@
+#include <set>
 #include "shader_recompiler.h"
 #include "shader_common.h"
 
@@ -416,6 +417,12 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 
     out += dimension;
 
+    // Fetches with unnormalized (texel) coordinates.
+    const bool denorm2D = instr.opcode == FetchOpcode::TextureFetch && instr.texCoordDenorm &&
+        instr.dimension == TextureDimension::Texture2D && !bicubic;
+    if (denorm2D)
+        out += "Denorm";
+
 #ifdef UNLEASHED_RECOMP
     if (bicubic)
         out += "Bicubic";
@@ -494,6 +501,9 @@ static uint64_t vectorSourceTemps(const AluInstruction& instr)
 
 void ShaderRecompiler::recompile(const AluInstruction& instr)
 {
+#ifdef REEOT_RECOMP
+    specConstantsMask |= SPEC_CONSTANT_ZERO_MUL;
+#endif
 #ifdef REEOT_RECOMP
     VertexAluWrite vertexWrite{};
     vertexWrite.dotOffset = SIZE_MAX;
@@ -803,8 +813,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             default:
             {
                 auto findResult = interpolators.find(instr.vectorDest);
-                assert(findResult != interpolators.end());
-                exportRegister = findResult->second;
+                if (findResult == interpolators.end())
+                {
+                    // Point size / edge flag / kill (63) and memory export
+                    // (eA 32, eM0..eM4 33..37) aren't implemented yet; write
+                    // them to an unused local so the shader compiles.
+                    const uint32_t reg = uint32_t(instr.vectorDest);
+                    if (reg >= 32 && reg <= 37)
+                        fmt::println(stderr, "NOTE vertex shader uses memory export (needs memexport support)");
+                    exportRegister = "oUnusedExport";
+                }
+                else
+                {
+                    exportRegister = findResult->second;
+                }
                 break;
             }
             }
@@ -881,7 +903,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Mul:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, {})", op(VECTOR_0), op(VECTOR_1));
+#else
             print("{} * {}", op(VECTOR_0), op(VECTOR_1));
+#endif
             break;
 
         case AluVectorOpcode::Max:
@@ -922,7 +948,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Mad:
+#ifdef REEOT_RECOMP
+            print("madZ({}, {}, {})", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#else
             print("{} * {} + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#endif
             break;
 
         case AluVectorOpcode::CndEq:
@@ -955,11 +985,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                 break;
             }
         #endif
+        #ifdef REEOT_RECOMP
+            print("dotZ({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #else
             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
+        #endif
             break;
 
         case AluVectorOpcode::Dp2Add:
+#ifdef REEOT_RECOMP
+            print("dotZ({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#else
             print("dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+#endif
             break;
 
         case AluVectorOpcode::Cube:
@@ -1078,12 +1116,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluScalarOpcode::Muls:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, {})", op(SCALAR_0), op(SCALAR_1));
+#else
             print("{} * {}", op(SCALAR_0), op(SCALAR_1));
+#endif
             break;
 
         case AluScalarOpcode::MulsPrev:
         case AluScalarOpcode::MulsPrev2:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, ps)", op(SCALAR_0));
+#else
             print("{} * ps", op(SCALAR_0));
+#endif
             break;
 
         case AluScalarOpcode::Maxs:
@@ -1207,7 +1253,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
         case AluScalarOpcode::Mulsc0:
         case AluScalarOpcode::Mulsc1:
+#ifdef REEOT_RECOMP
+            print("mulZ({}, {})", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+#else
             print("{} * {}", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+#endif
             break;
 
         case AluScalarOpcode::Addsc0:
@@ -1357,6 +1407,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
     assert(shaderContainer->constantTableOffset != NULL);
 
+    // Vertex shaders can't sample with implicit LOD (no derivatives); Xenos
+    // vertex texture fetches read mip 0. Turn the helpers' Sample calls into
+    // SampleLevel(..., 0) for vertex shaders.
+    if ((shaderContainer->flags & 0x1) != 0)
+        out += "#define Sample(s, uv) SampleLevel(s, uv, 0)\n";
     out += include;
     out += '\n';
 
@@ -1707,6 +1762,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     else
     {
         auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
+        // Some shaders fetch the same usage several times (manual fetches of
+        // neighbouring vertices or instance data). Each usage is one input, so
+        // declare it once (a second declaration does not compile).
+        std::set<uint32_t> declaredUsages;
+        bool repeatedUsages = false;
         for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
         {
             union
@@ -1716,6 +1776,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             };
 
             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
+
+            if (!declaredUsages.insert(uint32_t(vertexElement.usage) | (uint32_t(vertexElement.usageIndex) << 4)).second)
+            {
+                repeatedUsages = true;
+                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                continue;
+            }
 
             const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
 
@@ -1747,7 +1814,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
         }
+        if (repeatedUsages)
+            fmt::println(stderr, "NOTE vertex shader with repeated vertex fetch usages (they read the same input)");
 
+    #ifdef REEOT_RECOMP
+        out += "\tin uint iVertexId : SV_VertexID,\n";
+    #endif
     #ifdef UNLEASHED_RECOMP
         if (hasIndexCount)
         {
@@ -1864,7 +1936,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\n";
     }
 
-    bool printedRegisters[32]{};
+    // Xenos shaders address up to 64 temporary registers (real shaders use r32 and up).
+    bool printedRegisters[64]{};
 
     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
 
@@ -1923,7 +1996,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\n";
     }
 
-    for (size_t i = 0; i < 32; i++)
+    for (size_t i = 0; i < 64; i++)
     {
         if (!printedRegisters[i])
         {
@@ -1958,6 +2031,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #endif
     out += "\tfloat ps = 0.0;\n";
     out += "\tfloat4 vpre = 0.0;\n";
+    if (!isPixelShader)
+        out += "\tfloat4 oUnusedExport = 0.0;\n";
     if (isPixelShader)
     {
 #ifdef UNLEASHED_RECOMP
@@ -2196,11 +2271,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #ifdef REEOT_RECOMP
     straightLineFlow = simpleControlFlow;
 #endif
+    // Unstructurable control flow whose jumps all go forward (no loops)
+    // needs no loop or switch: each block runs if (pc <= block) and a jump
+    // just sets pc. GPU compilers handle the loop/switch state machine badly
+    // (register spills, no optimisation across blocks).
+    bool forwardOnly = false;
+    if (!simpleControlFlow)
+    {
+        forwardOnly = true;
+        for (uint32_t i = 0; i < cfSummaries.size(); ++i)
+        {
+            const CfSummary& summary = cfSummaries[i];
+            if (summary.kind == CfKind::LoopStart || summary.kind == CfKind::LoopEnd ||
+                ((summary.kind == CfKind::Cond || summary.kind == CfKind::Uncond) && summary.target <= i))
+                forwardOnly = false;
+        }
+    }
 
     if (simpleControlFlow)
     {
         out += '\n';
         indentation = 1;
+    }
+    else if (forwardOnly)
+    {
+        out += "\n\tuint pc = 0;\n";
+        out += "\t{\n";
     }
     else
     {
@@ -2224,7 +2320,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         for (auto& cfInstr : controlFlow)
         {
-            if (!simpleControlFlow)
+            if (forwardOnly)
+            {
+                indentation = 2;
+                out += "\t}\n";
+                println("\tif (pc <= {})", pc);
+                out += "\t{\n";
+            }
+            else if (!simpleControlFlow)
             {
                 indentation = 3;
                 println("\t\tcase {}:", pc);
@@ -2350,7 +2453,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     if (!simpleControlFlow)
                     {
                         println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
-                        out += "\t\t\tcontinue;\n";
+                        if (!forwardOnly)
+                            out += "\t\t\tcontinue;\n";
                     }
                 }
                 else
@@ -2388,7 +2492,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     {
                         out += "\t\t\t{\n";
                         println("\t\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
-                        out += "\t\t\t\tcontinue;\n";
+                        if (!forwardOnly)
+                            out += "\t\t\t\tcontinue;\n";
                         out += "\t\t\t}\n";
                     }
                 }
@@ -2542,6 +2647,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                         out += "return;\n";
                     }
                 }
+                else if (forwardOnly)
+                {
+                    out += "\t\tpc = 0xFFFFu;\n";
+                }
                 else
                 {
                     out += "\t\t\tbreak;\n";
@@ -2560,7 +2669,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         instrAddress += 12;
     }
 
-    if (!simpleControlFlow)
+    if (forwardOnly)
+    {
+        out += "\t}\n";
+    }
+    else if (!simpleControlFlow)
     {
         out += "\t\t\tbreak;\n";
         out += "\t\t}\n";
@@ -2656,7 +2769,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         if (precisePs && psDeclOffset != 0)
             out.insert(psDeclOffset, "precise ");
-        for (int32_t reg = 31; reg >= 0; reg--)
+        for (int32_t reg = 63; reg >= 0; reg--)
         {
             if (((preciseRegisters >> reg) & 1) && registerDeclOffsets[reg] != 0)
                 out.insert(registerDeclOffsets[reg], "precise ");
