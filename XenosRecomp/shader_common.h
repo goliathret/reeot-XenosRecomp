@@ -180,7 +180,11 @@ float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
 {
     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
-    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
+    // Nearly every call passes a constant zero offset; the size query and
+    // division (0 / size cannot be folded) cost a texture query per fetch.
+    if (any(offset != 0.0))
+        texCoord += offset / getTexture2DDimensions(texture);
+    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
 }
 
 float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
