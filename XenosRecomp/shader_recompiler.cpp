@@ -804,8 +804,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             default:
             {
                 auto findResult = interpolators.find(instr.vectorDest);
-                assert(findResult != interpolators.end());
-                exportRegister = findResult->second;
+                if (findResult == interpolators.end())
+                {
+                    // Point size / edge flag / kill (63) and memory export
+                    // (eA 32, eM0..eM4 33..37) aren't implemented yet; write
+                    // them to an unused local so the shader compiles.
+                    const uint32_t reg = uint32_t(instr.vectorDest);
+                    if (reg >= 32 && reg <= 37)
+                        fmt::println(stderr, "NOTE vertex shader uses memory export (needs memexport support)");
+                    exportRegister = "oUnusedExport";
+                }
+                else
+                {
+                    exportRegister = findResult->second;
+                }
                 break;
             }
             }
@@ -1977,6 +1989,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #endif
     out += "\tfloat ps = 0.0;\n";
     out += "\tfloat4 vpre = 0.0;\n";
+    if (!isPixelShader)
+        out += "\tfloat4 oUnusedExport = 0.0;\n";
     if (isPixelShader)
     {
 #ifdef UNLEASHED_RECOMP
